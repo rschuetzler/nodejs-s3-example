@@ -146,12 +146,11 @@ app.use((req, res, next) => {
 const knex = require("knex")({
     client: "pg",
     connection: {
-        host : process.env.DB_HOST || "localhost",
-        user : process.env.DB_USER || "postgres",
-        password : process.env.DB_PASSWORD || "admin",
-        database : process.env.DB_NAME || "foodisus",
-        port : process.env.DB_PORT || 5432  // PostgreSQL 16 typically uses port 5434
-    }
+        host : process.env.RDS_HOSTNAME || "localhost",
+        user : process.env.RDS_USERNAME || "postgres",
+        password : process.env.RDS_PASSWORD || "admin",
+        database : process.env.RDS_DB_NAME || "foodisus",
+        port : process.env.RDS_PORT || 5432  // PostgreSQL 16 typically uses port 543  }
 });
 
 // Tells Express how to read form data sent in the body of a request
