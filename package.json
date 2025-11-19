@@ -6,7 +6,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "install-deps": "npm install",
-    "setup": "npm install"
+    "setup": "npm install",
+    "start": "node index.js"
   },
   "author": "Greg",
   "license": "ISC",
