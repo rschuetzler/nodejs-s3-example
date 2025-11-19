@@ -14,7 +14,7 @@ const session = require("express-session");
 let path = require("path");
 
 const multer = require("multer");
-const { S3Client } = require("@aws-sdk/client-s3");
+const { S3Client, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const multerS3 = require("multer-s3");
 
 // Allows you to read the body of incoming HTTP requests and makes that data available on req.body
@@ -37,12 +37,13 @@ const isProduction = process.env.NODE_ENV === 'production';
 // Configure storage based on environment
 let storage;
 let upload;
+let s3Client; // Declare s3Client outside the if block so it can be used by helper functions
 
 if (isProduction) {
     // Production: Use AWS S3
     // When running on Elastic Beanstalk with an IAM role (like LabRole),
     // the SDK automatically uses the role's credentials - no need to specify them
-    const s3Client = new S3Client({
+    s3Client = new S3Client({
         region: process.env.AWS_REGION
     });
 
@@ -86,6 +87,49 @@ if (isProduction) {
     app.use("/images", express.static(uploadRoot));
 
     console.log('Using local disk storage for file uploads');
+}
+
+// Helper function to delete profile images
+async function deleteProfileImage(imagePath) {
+    if (!imagePath) {
+        return; // No image to delete
+    }
+
+    if (isProduction) {
+        // Production: Delete from S3
+        try {
+            // Extract the S3 key from the full URL
+            // URL format: https://bucket-name.s3.region.amazonaws.com/uploads/filename.jpg
+            // We need just: uploads/filename.jpg
+            const urlParts = imagePath.split('/');
+            const key = urlParts.slice(-2).join('/'); // Get last two parts: uploads/filename.jpg
+
+            const deleteParams = {
+                Bucket: process.env.AWS_S3_BUCKET_NAME,
+                Key: key
+            };
+
+            await s3Client.send(new DeleteObjectCommand(deleteParams));
+            console.log(`Successfully deleted S3 object: ${key}`);
+        } catch (error) {
+            console.error('Error deleting S3 object:', error.message);
+            // Don't throw - we don't want to block user deletion if S3 deletion fails
+        }
+    } else {
+        // Development: Delete from local disk
+        try {
+            const fs = require('fs');
+            const filePath = path.join(__dirname, imagePath);
+
+            if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+                console.log(`Successfully deleted local file: ${filePath}`);
+            }
+        } catch (error) {
+            console.error('Error deleting local file:', error.message);
+            // Don't throw - we don't want to block user deletion if file deletion fails
+        }
+    }
 }
 
 // process.env.PORT is when you deploy and 3001 is for test (3000 is often in use)
@@ -342,34 +386,34 @@ app.get("/editUser/:id", (req, res) => {
         });
 });
 
-app.post("/editUser/:id", upload.single("profileImage"), (req, res) => {
+app.post("/editUser/:id", upload.single("profileImage"), async (req, res) => {
     const userId = req.params.id;
     const { username, password, existingImage } = req.body;
 
     if (!username || !password) {
-        return knex("users")
-            .where({ id: userId })
-            .first()
-            .then((user) => {
-                if (!user) {
-                    return res.status(404).render("displayUsers", {
-                        users: [],
-                        error_message: "User not found."
-                    });
-                }
+        try {
+            const user = await knex("users")
+                .where({ id: userId })
+                .first();
 
-                res.status(400).render("editUser", {
-                    user,
-                    error_message: "Username and password are required."
-                });
-            })
-            .catch((err) => {
-                console.error("Error fetching user:", err.message);
-                res.status(500).render("displayUsers", {
+            if (!user) {
+                return res.status(404).render("displayUsers", {
                     users: [],
-                    error_message: "Unable to load user for editing."
+                    error_message: "User not found."
                 });
+            }
+
+            return res.status(400).render("editUser", {
+                user,
+                error_message: "Username and password are required."
             });
+        } catch (err) {
+            console.error("Error fetching user:", err.message);
+            return res.status(500).render("displayUsers", {
+                users: [],
+                error_message: "Unable to load user for editing."
+            });
+        }
     }
 
     // Build the path to the uploaded file
@@ -378,6 +422,11 @@ app.post("/editUser/:id", upload.single("profileImage"), (req, res) => {
     // If no new file, keep the existing image
     let profileImagePath;
     if (req.file) {
+        // New file uploaded - delete the old one if it exists
+        if (existingImage) {
+            await deleteProfileImage(existingImage);
+        }
+
         if (isProduction) {
             // S3 URL is provided by multer-s3 in the location property
             profileImagePath = req.file.location;
@@ -396,45 +445,46 @@ app.post("/editUser/:id", upload.single("profileImage"), (req, res) => {
         profile_image: profileImagePath
     };
 
-    knex("users")
-        .where({ id: userId })
-        .update(updatedUser)
-        .then((rowsUpdated) => {
-            if (rowsUpdated === 0) {
+    try {
+        const rowsUpdated = await knex("users")
+            .where({ id: userId })
+            .update(updatedUser);
+
+        if (rowsUpdated === 0) {
+            return res.status(404).render("displayUsers", {
+                users: [],
+                error_message: "User not found."
+            });
+        }
+
+        res.redirect("/users");
+    } catch (err) {
+        console.error("Error updating user:", err.message);
+
+        try {
+            const user = await knex("users")
+                .where({ id: userId })
+                .first();
+
+            if (!user) {
                 return res.status(404).render("displayUsers", {
                     users: [],
                     error_message: "User not found."
                 });
             }
 
-            res.redirect("/users");
-        })
-        .catch((err) => {
-            console.error("Error updating user:", err.message);
-            knex("users")
-                .where({ id: userId })
-                .first()
-                .then((user) => {
-                    if (!user) {
-                        return res.status(404).render("displayUsers", {
-                            users: [],
-                            error_message: "User not found."
-                        });
-                    }
-
-                    res.status(500).render("editUser", {
-                        user,
-                        error_message: "Unable to update user. Please try again."
-                    });
-                })
-                .catch((fetchErr) => {
-                    console.error("Error fetching user after update failure:", fetchErr.message);
-                    res.status(500).render("displayUsers", {
-                        users: [],
-                        error_message: "Unable to update user."
-                    });
-                });
-        });
+            res.status(500).render("editUser", {
+                user,
+                error_message: "Unable to update user. Please try again."
+            });
+        } catch (fetchErr) {
+            console.error("Error fetching user after update failure:", fetchErr.message);
+            res.status(500).render("displayUsers", {
+                users: [],
+                error_message: "Unable to update user."
+            });
+        }
+    }
 });
 
 app.get("/displayHobbies/:userId", (req, res) => {
@@ -617,13 +667,33 @@ app.post("/hobbies/:userId/delete/:hobbyId", (req, res) => {
         });
 });
 
-app.post("/deleteUser/:id", (req, res) => {
-    knex("users").where("id", req.params.id).del().then(users => {
+app.post("/deleteUser/:id", async (req, res) => {
+    try {
+        // First, get the user to find their profile image
+        const user = await knex("users")
+            .where("id", req.params.id)
+            .first();
+
+        if (!user) {
+            return res.status(404).render("displayUsers", {
+                users: [],
+                error_message: "User not found."
+            });
+        }
+
+        // Delete the profile image if it exists
+        if (user.profile_image) {
+            await deleteProfileImage(user.profile_image);
+        }
+
+        // Delete the user from the database
+        await knex("users").where("id", req.params.id).del();
+
         res.redirect("/users");
-    }).catch(err => {
+    } catch (err) {
         console.log(err);
         res.status(500).json({err});
-    })
+    }
 });
 
 app.listen(port, () => {
