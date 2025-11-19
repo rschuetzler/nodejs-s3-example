@@ -14,6 +14,8 @@ const session = require("express-session");
 let path = require("path");
 
 const multer = require("multer");
+const { S3Client } = require("@aws-sdk/client-s3");
+const multerS3 = require("multer-s3");
 
 // Allows you to read the body of incoming HTTP requests and makes that data available on req.body
 let bodyParser = require("body-parser");
@@ -29,31 +31,62 @@ const uploadRoot = path.join(__dirname, "images");
 // Sub-directory where uploaded profile pictures will be stored
 const uploadDir = path.join(uploadRoot, "uploads");
 
-// cb is the callback function
-// The callback is how you hand control back to Multer after 
-// your customization step
+// Check if we're in production mode
+const isProduction = process.env.NODE_ENV === 'production';
 
-// Configure Multer's disk storage engine
-// Multer calls it once per upload to ask where to store the file. Your function receives:
-// req: the incoming request.
-// file: metadata about the file (original name, mimetype, etc.).
-// cb: the callback.
-const storage = multer.diskStorage({
-    // Save files into our uploads directory
-    destination: (req, file, cb) => {
-        cb(null, uploadDir);
-    },
-    // Reuse the original filename so users see familiar names
-    filename: (req, file, cb) => {
-        cb(null, file.originalname);
-    }
-});
+// Configure storage based on environment
+let storage;
+let upload;
 
-// Create the Multer instance that will handle single-file uploads
-const upload = multer({ storage });
+if (isProduction) {
+    // Production: Use AWS S3
+    // When running on Elastic Beanstalk with an IAM role (like LabRole),
+    // the SDK automatically uses the role's credentials - no need to specify them
+    const s3Client = new S3Client({
+        region: process.env.AWS_REGION
+    });
 
-// Expose everything in /images (including uploads) as static assets
-app.use("/images", express.static(uploadRoot));
+    storage = multerS3({
+        s3: s3Client,
+        bucket: process.env.AWS_S3_BUCKET_NAME,
+        metadata: function (req, file, cb) {
+            cb(null, { fieldName: file.fieldname });
+        },
+        key: function (req, file, cb) {
+            // Generate a unique filename with timestamp to avoid collisions
+            const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+            const ext = path.extname(file.originalname);
+            const basename = path.basename(file.originalname, ext);
+            cb(null, `uploads/${basename}-${uniqueSuffix}${ext}`);
+        }
+    });
+
+    upload = multer({
+        storage: storage,
+        limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+    });
+
+    console.log('Using S3 storage for file uploads');
+} else {
+    // Development: Use local disk storage
+    storage = multer.diskStorage({
+        // Save files into our uploads directory
+        destination: (req, file, cb) => {
+            cb(null, uploadDir);
+        },
+        // Reuse the original filename so users see familiar names
+        filename: (req, file, cb) => {
+            cb(null, file.originalname);
+        }
+    });
+
+    upload = multer({ storage });
+
+    // Expose everything in /images (including uploads) as static assets
+    app.use("/images", express.static(uploadRoot));
+
+    console.log('Using local disk storage for file uploads');
+}
 
 // process.env.PORT is when you deploy and 3001 is for test (3000 is often in use)
 const port = process.env.PORT || 3001;
@@ -93,13 +126,18 @@ app.use(
 app.use((req, res, next) => {
     // Set a permissive CSP for development that allows localhost connections
     // This allows Chrome DevTools to connect to localhost:3000
+    // In production, also allow images from S3
+    const s3BucketUrl = isProduction && process.env.AWS_S3_BUCKET_NAME
+        ? `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com `
+        : '';
+
     res.setHeader(
         'Content-Security-Policy',
         "default-src 'self' http://localhost:* ws://localhost:* wss://localhost:*; " +
         "connect-src 'self' http://localhost:* ws://localhost:* wss://localhost:*; " +
         "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " +
         "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " +
-        "img-src 'self' data: https:; " +
+        `img-src 'self' data: https: ${s3BucketUrl}; ` +
         "font-src 'self' https://cdn.jsdelivr.net;"
     );
     next();
@@ -240,18 +278,28 @@ app.post("/addUser", upload.single("profileImage"), (req, res) => {
         return res.status(400).render("addUser", { error_message: "Username and password are required." });
     }
 
-    // Build the relative path to the uploaded file so the 
-    // browser can load it later.
-    const profileImagePath = req.file ? `/images/uploads/${req.file.filename}` : null;
+    // Build the path to the uploaded file
+    // In production (S3): use the full S3 URL from req.file.location
+    // In development (local): use the relative path
+    let profileImagePath = null;
+    if (req.file) {
+        if (isProduction) {
+            // S3 URL is provided by multer-s3 in the location property
+            profileImagePath = req.file.location;
+        } else {
+            // Local file path
+            profileImagePath = `/images/uploads/${req.file.filename}`;
+        }
+    }
 
     // Shape the data to match the users table schema.
     // Object literal - other languages use dictionaries
     // When the object is inserted with Knex, that value profileImagePath,
-    // becomes the database column profile_image, so the saved path to 
+    // becomes the database column profile_image, so the saved path to
     // the uploaded image ends up in the profile_image column for that user.
     const newUser = {
         username,
-        password,            
+        password,
         profile_image: profileImagePath
     };
 
@@ -323,7 +371,23 @@ app.post("/editUser/:id", upload.single("profileImage"), (req, res) => {
             });
     }
 
-    const profileImagePath = req.file ? `/images/uploads/${req.file.filename}` : existingImage || null;
+    // Build the path to the uploaded file
+    // In production (S3): use the full S3 URL from req.file.location
+    // In development (local): use the relative path
+    // If no new file, keep the existing image
+    let profileImagePath;
+    if (req.file) {
+        if (isProduction) {
+            // S3 URL is provided by multer-s3 in the location property
+            profileImagePath = req.file.location;
+        } else {
+            // Local file path
+            profileImagePath = `/images/uploads/${req.file.filename}`;
+        }
+    } else {
+        // No new file uploaded, keep existing image
+        profileImagePath = existingImage || null;
+    }
 
     const updatedUser = {
         username,
