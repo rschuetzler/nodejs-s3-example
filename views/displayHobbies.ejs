@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>User Hobbies</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    </head>
+    <body>
+        <div class="container mt-5">
+            <h1 class="mb-4">Hobbies for <%= user.username %></h1>
+
+            <% if (typeof error_message !== 'undefined' && error_message) { %>
+                <div class="alert alert-danger" role="alert">
+                    <%= error_message %>
+                </div>
+            <% } %>
+
+            <% if (typeof success_message !== 'undefined' && success_message) { %>
+                <div class="alert alert-success" role="alert">
+                    <%= success_message %>
+                </div>
+            <% } %>
+
+            <div class="card mb-4">
+                <div class="card-body">
+                    <h5 class="card-title">Current User</h5>
+                    <p><strong>User ID:</strong> <%= user.id %></p>
+                    <p><strong>Username:</strong> <%= user.username %></p>
+                </div>
+            </div>
+
+            <form action="/addHobbies/<%= user.id %>" method="GET" class="mb-4">
+                <button type="submit" class="btn btn-primary">Add Hobby</button>
+            </form>
+
+            <% if (hobbies.length === 0) { %>
+                <div class="alert alert-info" role="alert">
+                    No hobbies found for this user.
+                </div>
+            <% } else { %>
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Hobby Description</th>
+                            <th>Date Learned</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <% hobbies.forEach((hobby) => { %>
+                            <tr>
+                                <td><%= hobby.id %></td>
+                                <td><%= hobby.hobby_description %></td>
+                                <td>
+                                    <% 
+                                    let dateDisplay = hobby.date_learned;
+                                    if (dateDisplay instanceof Date) {
+                                        dateDisplay = dateDisplay.toISOString().split('T')[0];
+                                    } else if (typeof dateDisplay === 'string') {
+                                        dateDisplay = dateDisplay.split('T')[0];
+                                    }
+                                    %>
+                                    <%= dateDisplay %>
+                                </td>
+                                <td>
+                                    <form action="/hobbies/<%= user.id %>/delete/<%= hobby.id %>" method="POST" style="display: inline;">
+                                        <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        <% }) %>
+                    </tbody>
+                </table>
+            <% } %>
+
+            <a href="/users" class="btn btn-secondary mt-3">Back</a>
+        </div>
+    </body>
+</html>
+
