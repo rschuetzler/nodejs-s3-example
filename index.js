@@ -150,7 +150,8 @@ const knex = require("knex")({
         user : process.env.RDS_USERNAME || "postgres",
         password : process.env.RDS_PASSWORD || "admin",
         database : process.env.RDS_DB_NAME || "foodisus",
-        port : process.env.RDS_PORT || 5432  // PostgreSQL 16 typically uses port 543  }
+        port : process.env.RDS_PORT || 5432  // PostgreSQL 16 typically uses port 5432
+        }
 });
 
 // Tells Express how to read form data sent in the body of a request
